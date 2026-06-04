@@ -1,0 +1,17 @@
+{
+  "_comment": "지리 좌표 원점 설정 - 실제 촬영 위치로 변경하세요",
+  "mode": "local",
+
+  "geographic": {
+    "_comment": "mode=geo 일 때 사용. 실제 OSGB 촬영 위치 (WGS84)",
+    "longitude": 126.9779,
+    "latitude":  37.5665,
+    "height":    50
+  },
+
+  "local": {
+    "_comment": "mode=local 일 때 사용. 타일 크기(m) 및 오차",
+    "tileSize":      50,
+    "geometricError": 200
+  }
+}
