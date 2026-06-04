@@ -1,0 +1,15 @@
+# 변환 출력물
+output/
+
+# 대용량 바이너리 (git-lfs 사용 권장)
+*.osgb
+*.osg
+*.ive
+
+# 로그
+error.log
+
+# IDE / OS
+.claude/
+.DS_Store
+Thumbs.db
