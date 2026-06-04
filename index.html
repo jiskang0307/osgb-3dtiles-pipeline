@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>3D Tiles Viewer</title>
+
+  <!-- CesiumJS 1.142 CDN (ion 없이 사용 가능) -->
+  <script src="https://cesium.com/downloads/cesiumjs/releases/1.142/Build/Cesium/Cesium.js"></script>
+  <link  href="https://cesium.com/downloads/cesiumjs/releases/1.142/Build/Cesium/Widgets/widgets.css" rel="stylesheet" />
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+
+    html, body, #cesiumContainer {
+      width: 100%; height: 100%; margin: 0; padding: 0;
+      overflow: hidden;
+      background: #0a0a14;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+    }
+
+    /* ── 디버그 패널 ── */
+    #debug-panel {
+      position: absolute;
+      top: 12px; left: 12px;
+      width: 240px;
+      background: rgba(10, 12, 24, 0.88);
+      backdrop-filter: blur(8px);
+      color: #cdd6f4;
+      font-size: 12px;
+      font-family: 'Cascadia Code', 'Consolas', monospace;
+      padding: 12px 14px;
+      border-radius: 8px;
+      border: 1px solid rgba(137, 180, 250, 0.18);
+      box-shadow: 0 4px 24px rgba(0,0,0,0.5);
+      z-index: 100;
+      pointer-events: none;
+      user-select: none;
+    }
+    #debug-panel h3 {
+      margin: 0 0 10px;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      color: #89b4fa;
+      border-bottom: 1px solid rgba(137, 180, 250, 0.2);
+      padding-bottom: 8px;
+    }
+    .stat-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin: 4px 0;
+      line-height: 1.5;
+    }
+    .stat-label { color: #6c7086; }
+    .stat-val   { color: #cdd6f4; font-variant-numeric: tabular-nums; }
+    .stat-val.ok      { color: #a6e3a1; }
+    .stat-val.loading { color: #f9e2af; }
+    .stat-val.error   { color: #f38ba8; }
+
+    .divider {
+      border: none;
+      border-top: 1px solid rgba(137, 180, 250, 0.12);
+      margin: 8px 0;
+    }
+
+    /* ── 하단 상태 토스트 ── */
+    #toast {
+      position: absolute;
+      bottom: 48px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(10, 12, 24, 0.85);
+      backdrop-filter: blur(8px);
+      color: #cdd6f4;
+      font-size: 13px;
+      padding: 8px 20px;
+      border-radius: 20px;
+      border: 1px solid rgba(137, 180, 250, 0.2);
+      z-index: 100;
+      pointer-events: none;
+      transition: opacity 0.5s ease;
+      white-space: nowrap;
+    }
+    #toast.fade { opacity: 0; }
+
+    /* ── 좌표 오버레이 ── */
+    #coord-overlay {
+      position: absolute;
+      bottom: 12px;
+      left: 12px;
+      font-size: 11px;
+      font-family: 'Cascadia Code', 'Consolas', monospace;
+      color: rgba(205, 214, 244, 0.6);
+      z-index: 100;
+      pointer-events: none;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="cesiumContainer"></div>
+
+  <!-- 좌측 상단 디버그 패널 -->
+  <div id="debug-panel">
+    <h3>&#128506; Tile 로딩 상태</h3>
+    <div class="stat-row">
+      <span class="stat-label">서버</span>
+      <span class="stat-val loading" id="st-status">연결 중…</span>
+    </div>
+    <hr class="divider" />
+    <div class="stat-row">
+      <span class="stat-label">대기 요청</span>
+      <span class="stat-val" id="st-pending">—</span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">처리 중</span>
+      <span class="stat-val" id="st-processing">—</span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">렌더 타일</span>
+      <span class="stat-val" id="st-rendered">—</span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">준비 완료</span>
+      <span class="stat-val" id="st-ready">—</span>
+    </div>
+    <hr class="divider" />
+    <div class="stat-row">
+      <span class="stat-label">메모리</span>
+      <span class="stat-val" id="st-mem">—</span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">FPS</span>
+      <span class="stat-val" id="st-fps">—</span>
+    </div>
+  </div>
+
+  <!-- 하단 상태 토스트 -->
+  <div id="toast">tileset 로딩 중…</div>
+
+  <!-- 마우스 좌표 -->
+  <div id="coord-overlay" id="coord"></div>
+
+  <script>
+    'use strict';
+
+    // ═══════════════════════════════════════════════════════════
+    // ── 설정 ────────────────────────────────────────────────────
+    // ═══════════════════════════════════════════════════════════
+
+    const CONFIG = {
+      tilesetUrl: 'http://localhost:8080/tiles/tileset.json',
+
+      // 로컬 좌표계 → 지구 배치 원점 (tileset_options.json 의 geographic 값과 일치)
+      // OSGB 촬영 위치가 다른 경우 여기를 수정하세요.
+      origin: { lon: 126.9779, lat: 37.5665, height: 50 },
+
+      // tileset.json 의 boundingVolume 타입
+      //   'box'    → 로컬 좌표계, origin 기준 modelMatrix 적용
+      //   'region' → EPSG:4326 지리 좌표계, modelMatrix 불필요
+      bvType: 'box',
+
+      maximumScreenSpaceError: 16,   // 낮을수록 더 정밀한 LOD 로딩
+      maximumMemoryUsage:      512,  // MB
+    };
+
+    // ═══════════════════════════════════════════════════════════
+    // ── CesiumJS 초기화 (Cesium ion 사용 안 함) ─────────────────
+    // ═══════════════════════════════════════════════════════════
+
+    // ion을 완전히 끄기 위해 빈 토큰 설정 (로컬 tileset은 토큰 불필요)
+    Cesium.Ion.defaultAccessToken = '';
+
+    const viewer = new Cesium.Viewer('cesiumContainer', {
+      // 배경 이미지: OpenStreetMap (무료, 토큰 불필요)
+      imageryProvider: new Cesium.UrlTemplateImageryProvider({
+        url  : 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+        maximumLevel: 19,
+        credit: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+      }),
+
+      // 지형: 평평한 타원체 (Cesium World Terrain은 ion 토큰 필요)
+      terrainProvider: new Cesium.EllipsoidTerrainProvider(),
+
+      // UI 구성
+      baseLayerPicker    : false,
+      geocoder           : false,
+      homeButton         : true,
+      sceneModePicker    : true,
+      navigationHelpButton: false,
+      animation          : false,
+      timeline           : false,
+      fullscreenButton   : true,
+      infoBox            : false,
+      selectionIndicator : false,
+    });
+
+    // 렌더 품질
+    viewer.scene.postProcessStages.fxaa.enabled = true;
+    viewer.resolutionScale = window.devicePixelRatio ?? 1;
+
+    // ═══════════════════════════════════════════════════════════
+    // ── 3D Tiles 로드 ────────────────────────────────────────────
+    // ═══════════════════════════════════════════════════════════
+
+    const toast   = document.getElementById('toast');
+    const coordEl = document.getElementById('coord-overlay');
+
+    async function loadTileset() {
+      setStatus('연결 중…', 'loading');
+
+      let tileset;
+      try {
+        tileset = await Cesium.Cesium3DTileset.fromUrl(CONFIG.tilesetUrl, {
+          maximumScreenSpaceError: CONFIG.maximumScreenSpaceError,
+          maximumMemoryUsage     : CONFIG.maximumMemoryUsage,
+        });
+      } catch (err) {
+        const msg = `tileset 로드 실패: ${err.message}`;
+        setStatus('오류', 'error');
+        showToast(`❌ ${msg}`, false);
+        console.error('[3DTiles]', err);
+        return;
+      }
+
+      // ── 좌표계 처리 ────────────────────────────────────────────
+      // boundingVolume.box → 로컬 좌표계이므로 ECEF 변환 행렬 적용
+      // boundingVolume.region → 이미 지리 좌표이므로 modelMatrix 불필요
+      if (CONFIG.bvType === 'box') {
+        const { lon, lat, height } = CONFIG.origin;
+        const position   = Cesium.Cartesian3.fromDegrees(lon, lat, height);
+        const modelMatrix = Cesium.Transforms.eastNorthUpToFixedFrame(position);
+        tileset.modelMatrix = modelMatrix;
+      }
+
+      viewer.scene.primitives.add(tileset);
+
+      // ── 카메라 자동 줌인 ────────────────────────────────────────
+      try {
+        await viewer.zoomTo(tileset, new Cesium.HeadingPitchRange(
+          0,
+          Cesium.Math.toRadians(-35),  // 35° 내려다보기
+          200                           // 거리 (m)
+        ));
+      } catch {
+        // zoomTo 실패 시 tileset 중심으로 수동 비행
+        viewer.camera.flyToBoundingSphere(tileset.boundingSphere, {
+          offset: new Cesium.HeadingPitchRange(0, -0.5, 300)
+        });
+      }
+
+      setStatus('정상', 'ok');
+      showToast('✅ tileset 로딩 완료', true);
+
+      // ── 통계 패널 업데이트 (렌더 루프) ─────────────────────────
+      viewer.scene.preRender.addEventListener(() => {
+        const s = tileset.statistics ?? {};
+        setText('st-pending',    s.numberOfPendingRequests    ?? '—');
+        setText('st-processing', s.numberOfTilesProcessing    ?? '—');
+        setText('st-rendered',   s.numberOfRenderedTiles       ?? s.lastRendered ?? '—');
+        setText('st-ready',      s.numberOfTilesWithContentReady ?? '—');
+
+        const bytes = tileset.totalMemoryUsageInBytes ?? 0;
+        setText('st-mem', bytes > 0 ? fmtBytes(bytes) : '—');
+      });
+
+      return tileset;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // ── FPS 카운터 ───────────────────────────────────────────────
+    // ═══════════════════════════════════════════════════════════
+
+    let _frames = 0, _lastT = performance.now();
+    viewer.scene.postRender.addEventListener(() => {
+      _frames++;
+      const now = performance.now();
+      if (now - _lastT >= 1000) {
+        setText('st-fps', `${_frames} fps`);
+        _frames = 0;
+        _lastT  = now;
+      }
+    });
+
+    // ═══════════════════════════════════════════════════════════
+    // ── 마우스 클릭 → 좌표 출력 ─────────────────────────────────
+    // ═══════════════════════════════════════════════════════════
+
+    const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
+
+    handler.setInputAction((e) => {
+      // 지구 표면 좌표
+      const ray       = viewer.camera.getPickRay(e.position);
+      const cartesian = viewer.scene.globe.pick(ray, viewer.scene)
+                     ?? viewer.scene.pickPosition(e.position);
+
+      if (!cartesian) return;
+
+      const carto = Cesium.Cartographic.fromCartesian(cartesian);
+      const lon   = Cesium.Math.toDegrees(carto.longitude);
+      const lat   = Cesium.Math.toDegrees(carto.latitude);
+      const alt   = carto.height;
+
+      console.group('📍 클릭 좌표');
+      console.log('WGS84 (EPSG:4326)');
+      console.log(`  경도: ${lon.toFixed(7)}°`);
+      console.log(`  위도: ${lat.toFixed(7)}°`);
+      console.log(`  고도: ${alt.toFixed(2)} m`);
+      console.log('화면 픽셀');
+      console.log(`  x: ${e.position.x.toFixed(0)},  y: ${e.position.y.toFixed(0)}`);
+      console.groupEnd();
+
+    }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+
+    // 마우스 이동 → 좌하단 좌표 오버레이
+    handler.setInputAction((e) => {
+      const ray       = viewer.camera.getPickRay(e.endPosition);
+      const cartesian = viewer.scene.globe.pick(ray, viewer.scene);
+      if (!cartesian) { coordEl.textContent = ''; return; }
+
+      const carto = Cesium.Cartographic.fromCartesian(cartesian);
+      const lon   = Cesium.Math.toDegrees(carto.longitude).toFixed(5);
+      const lat   = Cesium.Math.toDegrees(carto.latitude ).toFixed(5);
+      const alt   = carto.height.toFixed(1);
+      coordEl.textContent = `${lat}°N  ${lon}°E  ${alt}m`;
+
+    }, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
+
+    // ═══════════════════════════════════════════════════════════
+    // ── 헬퍼 ─────────────────────────────────────────────────────
+    // ═══════════════════════════════════════════════════════════
+
+    function setText(id, val) {
+      const el = document.getElementById(id);
+      if (el) el.textContent = val;
+    }
+
+    function setStatus(text, cls) {
+      const el = document.getElementById('st-status');
+      if (!el) return;
+      el.textContent = text;
+      el.className   = `stat-val ${cls}`;
+    }
+
+    let _toastTimer;
+    function showToast(msg, autoHide = true) {
+      toast.textContent = msg;
+      toast.classList.remove('fade');
+      clearTimeout(_toastTimer);
+      if (autoHide) {
+        _toastTimer = setTimeout(() => toast.classList.add('fade'), 2500);
+      }
+    }
+
+    function fmtBytes(b) {
+      if (b === 0) return '0 B';
+      const u = ['B','KB','MB','GB'];
+      const i = Math.min(Math.floor(Math.log2(b) / 10), 3);
+      return (b / Math.pow(1024, i)).toFixed(1) + ' ' + u[i];
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // ── 실행 ─────────────────────────────────────────────────────
+    // ═══════════════════════════════════════════════════════════
+
+    loadTileset();
+  </script>
+</body>
+</html>

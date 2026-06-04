@@ -24,8 +24,8 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, unquote
 
 # ── 설정 (환경변수 우선, 없으면 기본값) ─────────────────────────
-BASE_DIR   = Path(__file__).parent
-TILES_DIR  = Path(os.environ.get("TILES_DIR",  BASE_DIR / "output" / "3dtiles"))
+BASE_DIR   = Path(__file__).resolve().parent
+TILES_DIR  = Path(os.environ.get("TILES_DIR",  BASE_DIR / "output" / "3dtiles")).resolve()
 TILES_PATH = os.environ.get("TILES_PATH", "/tiles").rstrip("/")
 HOST       = os.environ.get("HOST", "0.0.0.0")
 PORT       = int(os.environ.get("PORT", 8080))
@@ -106,11 +106,19 @@ class TilesHandler(BaseHTTPRequestHandler):
         url_path = unquote(parsed.path)
 
         # ── 라우팅 ───────────────────────────────────────────────
-        if url_path in ("/", ""):
-            self._send_json(self._status_payload(), head_only)
-
-        elif url_path == "/health":
+        if url_path == "/health":
             self._send_json({"status": "ok"}, head_only)
+
+        elif url_path in ("/", "", "/index.html"):
+            # 뷰어 HTML 이 있으면 서빙, 없으면 상태 JSON
+            viewer_html = BASE_DIR / "index.html"
+            if viewer_html.exists():
+                self._serve_file(viewer_html, head_only, root=BASE_DIR)
+            else:
+                self._send_json(self._status_payload(), head_only)
+
+        elif url_path == "/status":
+            self._send_json(self._status_payload(), head_only)
 
         elif url_path.startswith(TILES_PATH + "/") or url_path == TILES_PATH:
             rel = url_path[len(TILES_PATH):].lstrip("/")
@@ -120,7 +128,7 @@ class TilesHandler(BaseHTTPRequestHandler):
             self._send_error(404, f"경로를 찾을 수 없음: {url_path}")
 
     # ── 정적 파일 서빙 ───────────────────────────────────────────
-    def _serve_file(self, file_path: Path, head_only: bool):
+    def _serve_file(self, file_path: Path, head_only: bool, root: Path = None):
         # 디렉터리 인덱스 (tileset.json 우선)
         if file_path.is_dir():
             for candidate in ("tileset.json", "index.json"):
@@ -136,9 +144,10 @@ class TilesHandler(BaseHTTPRequestHandler):
             self._send_error(404, f"파일 없음: {file_path.name}")
             return
 
-        # Path traversal 방어
+        # Path traversal 방어 (root 기준으로 검사)
+        guard = (root or TILES_DIR).resolve()
         try:
-            file_path.resolve().relative_to(TILES_DIR.resolve())
+            file_path.resolve().relative_to(guard)
         except ValueError:
             self._send_error(403, "접근 거부")
             return
