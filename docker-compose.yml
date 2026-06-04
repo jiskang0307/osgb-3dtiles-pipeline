@@ -1,0 +1,21 @@
+services:
+  tiles-server:
+    build: .
+    ports:
+      - "${PORT:-8080}:8080"
+    volumes:
+      # 타일 데이터를 호스트에서 마운트 (이미지 재빌드 없이 교체 가능)
+      - ./output/3dtiles:/app/output/3dtiles:ro
+    environment:
+      TILES_DIR: /app/output/3dtiles
+      TILES_PATH: /tiles
+      HOST: 0.0.0.0
+      PORT: 8080
+      CORS_ORIGINS: "http://localhost:8080,http://localhost:3000,http://localhost:5173,null"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
